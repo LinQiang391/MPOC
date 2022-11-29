@@ -2,7 +2,7 @@
 import socket
 import struct
 import random
-
+import threading
 
 class Socket:
 
@@ -20,12 +20,11 @@ class Socket:
             connection.send(head)  # 发送包头
             connection.send(msg)
         except Exception as e:
-            print(f'send message failed,exceptiom as {e}')# 发送消息
-
-        # 获取消息，处理粘包
+            print(f'send message failed,exceptiom as {e}')
 
     def get_message(self, connection):
         try:
+            connection.settimeout(1)            #设置超时时间，避免只有连接没有发送消息，导致进程阻塞
             head = connection.recv(4)
             length = struct.unpack('i', head)[0]
         except Exception as e:
@@ -63,61 +62,12 @@ class Socket:
 
         return connection
 
-    def send_close_message(self, connection: socket = None):
-        if connection is None:
-            return
-        else:
-            self.send_message(connection, 'close')
-
-
 class Server(Socket):
 
     def __init__(self, host: str = '127.0.0.1', port: int = 3333):
         super(Server, self).__init__(host, port)
 
-    #单个socket完成消息客户端与服务端消息的交互，只允许与单个客户端通信，绑定相同个端口
-    def server_start_with_single_socket(self):
-        s = self.create_socket()
-        s.listen()
-        connection, address = s.accept()
-        while True:
-            try:
-                message = self.get_message(connection=connection)
-                if message is not None:
-                    if message == 'close':
-                        connection.close()
-                        s.close()
-                        return
-                    else:
-                        print(message)
-            except Exception as e:
-                print(f'occur exception {e}')
-                connection.close()
-                s.close()
-                return
-        connection.close()
-        s.close()
 
-    def server_start_with_differ_socket(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind(('127.0.0.1', 3333))
-        s.listen()
-        num = 0
-        # connection, address =s.accept()
-        l = []
-        while True:
-            try:
-                connection, address = s.accept()
-                data = self.get_message(connection)
-                if data == 'close':
-                    pass
-                    # self.__redis.close()
-                    #self.send_quit_message()
-                else:
-                    print(data)
-            except Exception as e:
-                print('occur exception as {}'.format(e))
-                break
 
     def server_start(self, connection: socket = None, single: bool = True):
         if connection is None:
@@ -130,6 +80,7 @@ class Server(Socket):
             try:
                 if not single:
                     new_connection, address = connection.accept()
+                    #print(address)
                 message = self.get_message(connection=new_connection)
                 if message is not None:
                     if message == 'close':
@@ -138,6 +89,8 @@ class Server(Socket):
                         return
                     else:
                         print(message)
+                else:
+                    print('fail')
             except Exception as e:
                 print(f'occur exception {e}')
                 new_connection.close()
@@ -147,26 +100,54 @@ class Server(Socket):
 
 class Client(Socket):
 
+    __lock=threading.Lock()
+
     def __init__(self, host: str = '127.0.0.1', port: int = 3333):
         super(Client, self).__init__(host, port)
 
-    def send_message_from_list(self, connection: socket = None, msgs: list = None, close: bool = True) -> bool:
+    def __send_message_from_list(self, connection: socket = None, msgs: list = None, close: bool = True) -> bool:
         if connection is None:
             for msg in msgs:
                 connection = self.create_socket(bind=False)
-                try:
-                    self.send_message(connection, msg)
-                    print(msg)
-                except Exception as e:
-                    print(f'occur exception as {e}')
-                    return False
-                connection.close()
+                self.__lock.acquire()
+                self.send_message(connection=connection,msg=msg)
+                print(msg)
+                self.__lock.release()
+                #如果连接不关闭，需要后续处理
+                if close:
+                    connection.close()
         else:
             for msg in msgs:
-                try:
-                    self.send_message(connection,msg)
-                except Exception as e:
-                    return False
+                self.__lock.acquire()
+                self.send_message(connection=connection, msg=msg)
+                print(msg)
+                self.__lock.release()
             if close:
                 connection.close
         return True
+
+    def __send_message_from_string(self, connection: socket = None, msg: str= None,close:bool =True):
+        if connection is None:
+            connection=self.create_socket(bind=False)
+            self.__lock.acquire()
+            self.send_message(connection=connection,msg=msg)
+            print(msg)
+            self.__lock.release()
+            if close:
+                connection.close()
+        else:
+            self.__lock.acquire()
+            self.send_message(connection=connection,msg=msg)
+            print(msg)
+            self.__lock.release()
+            if close:
+                connection.close()
+
+    def send_message_ex(self, connection: socket=None, msg = None, close: bool=True):
+
+        if isinstance(msg, list):
+            self.__send_message_from_list(connection=connection,msgs=msg,close=close)
+        elif isinstance(msg,str):
+            self.__send_message_from_string(connection=connection,msg=msg,close=close)
+        else:
+            print('type error')
